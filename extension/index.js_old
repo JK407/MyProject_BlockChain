@@ -1,0 +1,102 @@
+  // document.addEventListener("DOMContentLoaded", function() {
+  //   var mySelect = document.getElementById("mySelect");
+  //   mySelect.addEventListener("change", function() {
+  //     var selectedValue = this.value;
+  //     alert(selectedValue);
+  //     var url = "http://127.0.0.1"; // 设置基础 URL
+  
+  //     // 根据选择的值构建完整的 URL
+  //     switch (selectedValue) {
+  //       case "http://127.0.0.1:8080":
+  //         url = "http://127.0.0.1:8080/";
+  //         break;
+  //       case "http://127.0.0.1:8081":
+  //         url = "http://127.0.0.1:8081/";
+  //         break;
+  //       case "http://127.0.0.1:8082":
+  //         url = "http://127.0.0.1:8082/";
+  //         break;
+  //       // 添加更多的选项和相应的 URL
+  //     }
+  
+  //     // 如果 URL 不为空，则进行 AJAX 请求
+  //     if (url !== "") {
+  //       var loadPrivateKeyButton = document.getElementById("load_privateKey");
+  //       loadPrivateKeyButton.addEventListener("click", function() {
+  //         var privateKey = document.getElementById("inputPrivateKey").value;
+  //         console.log("用私钥加载公钥和地址" + privateKey);
+  //         var request = new XMLHttpRequest();
+  //         request.open("POST", url + "loadPrivateKey", true);
+  //         request.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+  //         request.onreadystatechange = function() {
+  //           if (request.readyState === 4 && request.status === 200) {
+  //             var response = JSON.parse(request.responseText);
+  //             document.getElementById("inputPublic").value = response.public_key;
+  //             document.getElementById("inputAddress").value = response.blockchain_address;
+  //             console.log(response);
+  //           } else {
+  //             console.error("Error: " + request.status);
+  //           }
+  //         };
+  //         request.send("privateKey=" + privateKey);
+  //       });
+  
+  //       var loadRandomButton = document.getElementById("loadRandom");
+  //       loadRandomButton.addEventListener("click", function() {
+  //         console.log("随机生成用户钱包：");
+  //         var request = new XMLHttpRequest();
+  //         request.open("POST", url + "wallet", true);
+  //         request.onreadystatechange = function() {
+  //           if (request.readyState === 4 && request.status === 200) {
+  //             var response = JSON.parse(request.responseText);
+  //             document.getElementById("inputPublic").value = response.public_key;
+  //             document.getElementById("inputPrivateKey").value = response.private_key;
+  //             document.getElementById("inputAddress").value = response.blockchain_address;
+  //             console.info(response);
+  //           } else {
+  //             console.error("Error: " + request.status);
+  //           }
+  //         };
+  //         request.send();
+  //       });
+
+
+  //       var buttonSubmit = document.getElementById("buttonSubmit");
+  //       buttonSubmit.addEventListener("click", function() {
+  //         var confirm_text = "确定要发送吗?";
+  //         var confirm_result = confirm(confirm_text);
+  //         if (confirm_result !== true) {
+  //           alert("取消");
+  //           return;
+  //         }
+
+        
+  //         var transaction_data = {
+  //           sender_private_key: document.getElementById("inputPrivateKey").value,
+  //           sender_blockchain_address: document.getElementById("inputAddress").value,
+  //           sender_public_key: document.getElementById("inputPublic").value,
+  //           recipient_blockchain_address: document.getElementById("inputReceiveAddress").value,
+  //           value: document.getElementById("inputAmount").value,
+  //         };
+        
+  //         var xhr = new XMLHttpRequest();
+  //         xhr.open("POST", url + "transaction", true);
+  //         xhr.setRequestHeader("Content-Type", "application/json");
+  //         xhr.onreadystatechange = function() {
+  //           if (xhr.readyState === 4) {
+  //             if (xhr.status === 200) {
+  //               var response = JSON.parse(xhr.responseText);
+  //               console.info(response);
+  //               alert("发送成功");
+  //             } else {
+  //               console.error(xhr.responseText);
+  //               alert("发送失败");
+  //             }
+  //           }
+  //         };
+  //         xhr.send(JSON.stringify(transaction_data));
+  //       });
+        
+  //     }
+  //   });
+  // });

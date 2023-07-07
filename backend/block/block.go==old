@@ -1,0 +1,621 @@
+package block
+
+import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log"
+	"math/big"
+	"net/http"
+	"oberlblockchain/utils"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/fatih/color"
+)
+const MINING_ACCOUNT_ADDRESS = "Oberl BLOCKCHAIN"
+const MINING_REWARD = 5000
+const MINING_TIMER_SEC = 10
+const (
+	//以下参数可以添加到启动参数
+	BLOCKCHAIN_PORT_RANGE_START      = 5000
+	BLOCKCHAIN_PORT_RANGE_END        = 5001
+	NEIGHBOR_IP_RANGE_START          = 0
+	NEIGHBOR_IP_RANGE_END            = 0
+	BLOCKCHIN_NEIGHBOR_SYNC_TIME_SEC = 10
+)
+
+type Block struct {
+	nonce        int
+	previousHash [32]byte
+	timestamp    int64
+	transactions []*Transaction
+	blockHash     [32]byte
+}
+
+func NewBlock(nonce int, previousHash [32]byte, txs []*Transaction) *Block {
+	b := new(Block)
+	b.timestamp = time.Now().UnixNano()
+	b.nonce = nonce
+	b.previousHash = previousHash
+	b.transactions = txs
+	b.blockHash = b.Hash()
+	return b
+}
+func (b *Block) BlockHash() [32]byte {
+	return b.blockHash
+}
+func (b *Block) PreviousHash() [32]byte {
+	return b.previousHash
+}
+
+func (b *Block) Nonce() int {
+	return b.nonce
+}
+
+func (b *Block) Transactions() []*Transaction {
+	return b.transactions
+}
+
+func (b *Block) Print() {
+	log.Printf("%-15v:%30d\n", "timestamp", b.timestamp)
+	//fmt.Printf("timestamp       %d\n", b.timestamp)
+	log.Printf("%-15v:%30d\n", "nonce", b.nonce)
+	log.Printf("%-15v:%30x\n", "previous_hash", b.previousHash)
+	log.Printf("%-15v:%30x\n", "block_hash", b.blockHash)
+	//log.Printf("%-15v:%30s\n", "transactions", b.transactions)
+	for _, t := range b.transactions {
+		t.Print()
+	}
+}
+
+type Blockchain struct {
+	transactionPool   []*Transaction
+	chain             []*Block
+	blockchainAddress string
+	port              uint16
+	mux               sync.Mutex
+
+	neighbors    []string
+	muxNeighbors sync.Mutex
+}
+
+// 新建一条链的第一个区块
+// NewBlockchain(blockchainAddress string) *Blockchain
+// 函数定义了一个创建区块链的方法，它接收一个字符串类型的参数 blockchainAddress，
+// 它返回一个区块链类型的指针。在函数内部，它创建一个区块链对象并为其设置地址，
+// 然后创建一个创世块并将其添加到区块链中，最后返回区块链对象。
+func NewBlockchain(blockchainAddress string, port uint16) *Blockchain {
+	bc := new(Blockchain)
+	b := &Block{}
+	bc.CreateBlock(0, b.Hash()) //创世纪块
+	bc.blockchainAddress = blockchainAddress
+
+	bc.port = port
+	return bc
+}
+
+func (bc *Blockchain) Chain() []*Block {
+	return bc.chain
+}
+
+func (bc *Blockchain) Run() {
+
+	bc.StartSyncNeighbors()
+	bc.ResolveConflicts()
+	bc.StartMining()
+}
+
+func (bc *Blockchain) SetNeighbors() {
+	bc.neighbors = utils.FindNeighbors(
+		utils.GetHost(), bc.port,
+		NEIGHBOR_IP_RANGE_START, NEIGHBOR_IP_RANGE_END,
+		BLOCKCHAIN_PORT_RANGE_START, BLOCKCHAIN_PORT_RANGE_END)
+
+	color.Blue("邻居节点：%v", bc.neighbors)
+}
+
+func (bc *Blockchain) SyncNeighbors() {
+	bc.muxNeighbors.Lock()
+	defer bc.muxNeighbors.Unlock()
+	bc.SetNeighbors()
+}
+
+func (bc *Blockchain) StartSyncNeighbors() {
+	bc.SyncNeighbors()
+	_ = time.AfterFunc(time.Second*BLOCKCHIN_NEIGHBOR_SYNC_TIME_SEC, bc.StartSyncNeighbors)
+}
+
+func (bc *Blockchain) TransactionPool() []*Transaction {
+	return bc.transactionPool
+}
+
+func (bc *Blockchain) ClearTransactionPool() {
+	bc.transactionPool = bc.transactionPool[:0]
+}
+
+func (bc *Blockchain) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Blocks []*Block `json:"chain"`
+	}{
+		Blocks: bc.chain,
+	})
+}
+
+func (bc *Blockchain) UnmarshalJSON(data []byte) error {
+	v := &struct {
+		Blocks *[]*Block `json:"chain"`
+	}{
+		Blocks: &bc.chain,
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	return nil
+}
+
+// (bc *Blockchain) CreateBlock(nonce int, previousHash [32]byte) *Block
+//  函数是在区块链上创建新的区块，它接收两个参数：一个int类型的nonce和一个字节数组类型的 previousHash，
+//  返回一个区块类型的指针。在函数内部，它使用传入的参数来创建一个新的区块，
+//  然后将该区块添加到区块链的链上，并清空交易池。
+
+func (bc *Blockchain) CreateBlock(nonce int, previousHash [32]byte) *Block {
+	b := NewBlock(nonce, previousHash, bc.transactionPool)
+	bc.chain = append(bc.chain, b)
+	bc.transactionPool = []*Transaction{}
+
+	// 删除其他节点的交易
+	for _, n := range bc.neighbors {
+		endpoint := fmt.Sprintf("http://%s/transactions", n)
+		client := &http.Client{}
+		req, _ := http.NewRequest("DELETE", endpoint, nil)
+		resp, _ := client.Do(req)
+		log.Printf("%v", resp)
+	}
+	return b
+}
+
+func (bc *Blockchain) Print() {
+	for i, block := range bc.chain {
+		color.Green("%s BLOCK %d %s\n", strings.Repeat("=", 25), i, strings.Repeat("=", 25))
+		block.Print()
+	}
+	color.Yellow("%s\n\n\n", strings.Repeat("*", 50))
+}
+
+func (b *Block) Hash() [32]byte {
+	m, _ := json.Marshal(b)
+	return sha256.Sum256([]byte(m))
+}
+
+func (b *Block) MarshalJSON() ([]byte, error) {
+
+	return json.Marshal(struct {
+		Timestamp    int64          `json:"timestamp"`
+		Nonce        int            `json:"nonce"`
+		PreviousHash string         `json:"previous_hash"`
+		BlockHash    string			`json:"blockHash"`
+		Transactions []*Transaction `json:"transactions"`
+	}{
+		Timestamp:    b.timestamp,
+		Nonce:        b.nonce,
+		PreviousHash: fmt.Sprintf("%x", b.previousHash),
+		BlockHash: fmt.Sprintf("%x", b.blockHash),
+		Transactions: b.transactions,
+	})
+}
+
+func (b *Block) UnmarshalJSON(data []byte) error {
+	var previousHash string
+	var blockHash string
+	v := &struct {
+		Timestamp    *int64          `json:"timestamp"`
+		Nonce        *int            `json:"nonce"`
+		PreviousHash *string         `json:"previous_hash"`
+		BlockHash    *string	`json:"blockHash"`
+		Transactions *[]*Transaction `json:"transactions"`
+	}{
+		Timestamp:    &b.timestamp,
+		Nonce:        &b.nonce,
+		PreviousHash: &previousHash,
+		BlockHash: &blockHash,
+		Transactions: &b.transactions,
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	ph, _ := hex.DecodeString(*v.PreviousHash)
+	bh, _ :=hex.DecodeString(*v.BlockHash)
+	copy(b.previousHash[:], ph[:32])
+	copy(b.blockHash[:], bh[:32])
+	return nil
+}
+
+func (bc *Blockchain) LastBlock() *Block {
+	return bc.chain[len(bc.chain)-1]
+}
+
+func (bc *Blockchain) AddTransaction(
+	sender string,
+	recipient string,
+	value int64,
+	senderPublicKey *ecdsa.PublicKey,
+	s *utils.Signature) bool {
+	t := NewTransaction(sender, recipient, value)
+
+	//如果是挖矿得到的奖励交易，不验证
+	if sender == MINING_ACCOUNT_ADDRESS {
+		bc.transactionPool = append(bc.transactionPool, t)
+		return true
+	}
+
+	// 判断有没有足够的余额
+	// log.Printf("transaction.go sender:%s  account=%d", sender, bc.CalculateTotalAmount(sender))
+	// if bc.CalculateTotalAmount(sender) <= uint64(value) {
+	// 	log.Printf("ERROR: %s ，你的钱包里没有足够的钱", sender)
+	// 	return false
+	// }
+
+	if bc.VerifyTransactionSignature(senderPublicKey, s, t) {
+
+		bc.transactionPool = append(bc.transactionPool, t)
+		return true
+	} else {
+		log.Println("ERROR: 验证交易")
+	}
+	return false
+
+}
+
+func (bc *Blockchain) CreateTransaction(sender string, recipient string, value uint64,
+	senderPublicKey *ecdsa.PublicKey, s *utils.Signature) bool {
+	isTransacted := bc.AddTransaction(sender, recipient, int64(value), senderPublicKey, s)
+
+	if isTransacted {
+		for _, n := range bc.neighbors {
+			publicKeyStr := fmt.Sprintf("%064x%064x", senderPublicKey.X.Bytes(),
+				senderPublicKey.Y.Bytes())
+			signatureStr := s.String()
+			bt := &TransactionRequest{
+				&sender, &recipient, &publicKeyStr, &value, &signatureStr}
+			m, _ := json.Marshal(bt)
+			buf := bytes.NewBuffer(m)
+			endpoint := fmt.Sprintf("http://%s/transactions", n)
+			client := &http.Client{}
+			req, _ := http.NewRequest("PUT", endpoint, buf)
+			resp, _ := client.Do(req)
+			log.Printf("   **  **  **  CreateTransaction : %v", resp)
+		}
+	}
+
+	return isTransacted
+}
+
+func (bc *Blockchain) CopyTransactionPool() []*Transaction {
+	transactions := make([]*Transaction, 0)
+	for _, t := range bc.transactionPool {
+		transactions = append(transactions,
+			NewTransaction(t.SenderAddress,
+				t.ReceiveAddress,
+				t.Value))
+	}
+	return transactions
+}
+
+func (bc *Blockchain) ValidProof(nonce int,
+	previousHash [32]byte,
+	transactions []*Transaction,
+	difficulty int,
+) bool {
+
+	bigi_2 := big.NewInt(2)
+	bigi_256 := big.NewInt(256)
+	bigi_diff := big.NewInt(int64(difficulty))
+
+	target := new(big.Int).Exp(bigi_2, bigi_256, nil)
+	target = new(big.Int).Div(target, bigi_diff)
+
+	tmpBlock := Block{nonce: nonce, previousHash: previousHash, transactions: transactions, timestamp: 0}
+	result := bytesToBigInt(tmpBlock.Hash())
+
+	return target.Cmp(result) > 0
+}
+
+func bytesToBigInt(b [32]byte) *big.Int {
+	// 转换为 []byte 类型
+	bytes := b[:]
+	// 调用 SetBytes() 函数进行转换
+	result := new(big.Int).SetBytes(bytes)
+	return result
+}
+
+
+var MiningDifficult = 0x80000 //改
+func (bc *Blockchain) ProofOfWork() int {
+	// 1，得到最近100个区块的平均时间
+	// 2如果小于5秒，MINING_DIFFICULT增加4.5
+	// 3判断一个难度上限
+
+	// 检查区块链是否为空
+	if len(bc.chain) == 0 {
+		return 0
+	}
+
+	transactions := bc.CopyTransactionPool() //选择交易？控制交易数量？
+	previousHash := bc.LastBlock().Hash()
+	nonce := 0
+	begin := time.Now()
+
+	// 我们需要根据上一个区块的时间，来判断是不是在目标区间来调整 MINING_DIFFICULT
+
+	if bc.getBlockSpendTime(len(bc.chain)-1) < 3e+9 {
+		// MINING_DIFFICULT++   //原
+		MiningDifficult += 32
+	} else {
+		if MiningDifficult >= 130000 {
+			// MINING_DIFFICULT-- //原
+			MiningDifficult -= 32
+		}
+	}
+
+	for !bc.ValidProof(nonce, previousHash, transactions, MiningDifficult) {
+		nonce += 1
+	}
+	end := time.Now()
+
+	log.Printf("POW spend Time:%f Second, Diff:%d", end.Sub(begin).Seconds(), MiningDifficult)
+	// log.Printf("POW spend Time:%s", end.Sub(begin))
+
+	return nonce
+}
+
+func (bc *Blockchain) getBlockSpendTime(bnum int) int64 {
+	if bnum == 0 {
+		return 0
+	}
+	return bc.chain[bnum].timestamp - bc.chain[bnum-1].timestamp
+
+}
+
+// 将交易池的交易打包
+func (bc *Blockchain) Mining() bool {
+	bc.mux.Lock()
+
+	defer bc.mux.Unlock()
+
+	// 此处判断交易池是否有交易，你可以不判断，打包无交易区块
+	if len(bc.transactionPool) == 0 {
+		return false
+	}
+
+	bc.AddTransaction(MINING_ACCOUNT_ADDRESS, bc.blockchainAddress, MINING_REWARD, nil, nil)
+	nonce := bc.ProofOfWork()
+	previousHash := bc.LastBlock().Hash()
+	bc.CreateBlock(nonce, previousHash)
+	log.Println("action=mining, status=success")
+
+	for _, n := range bc.neighbors {
+		endpoint := fmt.Sprintf("http://%s/consensus", n)
+		client := &http.Client{}
+		req, _ := http.NewRequest("PUT", endpoint, nil)
+		resp, _ := client.Do(req)
+		log.Printf("%v", resp)
+	}
+
+	return true
+}
+
+func (bc *Blockchain) CalculateTotalAmount(accountAddress string) uint64 {
+	var totalAmount uint64 = 0
+	for _, _chain := range bc.chain {
+		for _, _tx := range _chain.transactions {
+			if accountAddress == _tx.ReceiveAddress {
+				totalAmount = totalAmount + uint64(_tx.Value)
+			}
+			if accountAddress == _tx.SenderAddress {
+				totalAmount = totalAmount - uint64(_tx.Value)
+			}
+		}
+	}
+	return totalAmount
+}
+
+func (bc *Blockchain) StartMining() {
+	bc.Mining()
+	// 使用time.AfterFunc函数创建了一个定时器，它在指定的时间间隔后执行bc.StartMining函数（自己调用自己）。
+	_ = time.AfterFunc(time.Second*MINING_TIMER_SEC, bc.StartMining)
+	color.Yellow("minetime: %v\n", time.Now())
+}
+
+type AmountResponse struct {
+	Amount uint64 `json:"amount"`
+}
+
+func (ar *AmountResponse) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Amount uint64 `json:"amount"`
+	}{
+		Amount: ar.Amount,
+	})
+}
+
+type Transaction struct {
+	SenderAddress  string
+	ReceiveAddress string
+	Value          int64
+	TxHash 			[32]byte
+}
+
+func NewTransaction(sender string, receive string, value int64) *Transaction {
+	t := Transaction{
+		SenderAddress:  sender,
+		ReceiveAddress: receive,
+		Value:          value,
+	}
+	t.CalculateTxHash() // 计算并设置 TxHash 值
+	return &t
+}
+
+
+func (bc *Blockchain) VerifyTransactionSignature(
+	senderPublicKey *ecdsa.PublicKey, s *utils.Signature, t *Transaction) bool {
+	data, err := t.MarshalForSignature()
+	if err != nil {
+		log.Println("ERROR: 签名验证失败")
+		return false
+	}
+	h := sha256.Sum256(data)
+	return ecdsa.Verify(senderPublicKey, h[:], s.R, s.S)
+}
+
+
+func (t *Transaction) MarshalForSignature() ([]byte, error) {
+	return json.Marshal(struct {
+		Sender    string `json:"sender_blockchain_address"`
+		Recipient string `json:"recipient_blockchain_address"`
+		Value     int64  `json:"value"`
+	}{
+		Sender:    t.SenderAddress,
+		Recipient: t.ReceiveAddress,
+		Value:     t.Value,
+	})
+}
+
+
+func (t *Transaction) Print() {
+	color.Red("%s\n", strings.Repeat("~", 30))
+	color.Cyan("发送地址             %s\n", t.SenderAddress)
+	color.Cyan("接受地址             %s\n", t.ReceiveAddress)
+	color.Cyan("金额                 %d\n", t.Value)
+
+}
+
+func (t *Transaction) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Sender    string `json:"sender_blockchain_address"`
+		Recipient string `json:"recipient_blockchain_address"`
+		Value     int64  `json:"value"`
+		TxHash    string `json:"txHash"` // 将字段名称改为 txHash
+	}{
+		Sender:    t.SenderAddress,
+		Recipient: t.ReceiveAddress,
+		Value:     t.Value,
+		TxHash:    fmt.Sprintf("%x", t.TxHash),
+	})
+}
+
+
+
+func (t *Transaction) UnmarshalJSON(data []byte) error {
+	var txHash string
+	v := &struct {
+		Sender    *string `json:"sender_blockchain_address"`
+		Recipient *string `json:"recipient_blockchain_address"`
+		Value     *int64  `json:"value"`
+		TxHash    *string `json:"txHash"` // 将字段名称改为 txHash
+	}{
+		Sender:    &t.SenderAddress,
+		Recipient: &t.ReceiveAddress,
+		Value:     &t.Value,
+		TxHash:    &txHash,
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	th, _ := hex.DecodeString(*v.TxHash)
+	copy(t.TxHash[:], th[:32])
+	return nil
+}
+
+
+func (bc *Blockchain) ValidChain(chain []*Block) bool {
+	preBlock := chain[0]
+	currentIndex := 1
+	for currentIndex < len(chain) {
+		b := chain[currentIndex]
+		if b.previousHash != preBlock.Hash() {
+			return false
+		}
+
+		if !bc.ValidProof(b.Nonce(), b.PreviousHash(), b.Transactions(), MiningDifficult) {
+			return false
+		}
+
+		preBlock = b
+		currentIndex += 1
+	}
+	return true
+}
+
+func (bc *Blockchain) ResolveConflicts() bool {
+	var longestChain []*Block = nil
+	maxLength := len(bc.chain)
+
+	for _, n := range bc.neighbors {
+		endpoint := fmt.Sprintf("http://%s/chain", n)
+		resp, err := http.Get(endpoint)
+		if err != nil {
+			color.Red("                 错误 ：ResolveConflicts GET请求")
+			return false
+		} else {
+			color.Green("                正确 ：ResolveConflicts  GET请求")
+		}
+		if resp.StatusCode == 200 {
+			var bcResp Blockchain
+			decoder := json.NewDecoder(resp.Body)
+			err1 := decoder.Decode(&bcResp)
+
+			if err1 != nil {
+				color.Red("                 错误 ：ResolveConflicts Decode")
+				return false
+			} else {
+				color.Green("                正确 ：ResolveConflicts  Decode")
+			}
+
+			chain := bcResp.Chain()
+			color.Cyan("   ResolveConflicts   chain len:%d ", len(chain))
+			if len(chain) > maxLength && bc.ValidChain(chain) {
+				maxLength = len(chain)
+				longestChain = chain
+			}
+		}
+	}
+
+	color.Cyan("   ResolveConflicts   longestChain len:%d ", len(longestChain))
+
+	if longestChain != nil {
+		bc.chain = longestChain
+		log.Printf("Resovle confilicts replaced")
+		return true
+	}
+	log.Printf("Resovle conflicts not replaced")
+	return false
+}
+
+type TransactionRequest struct {
+	SenderBlockchainAddress    *string `json:"sender_blockchain_address"`
+	RecipientBlockchainAddress *string `json:"recipient_blockchain_address"`
+	SenderPublicKey            *string `json:"sender_public_key"`
+	Value                      *uint64 `json:"value"`
+	Signature                  *string `json:"signature"`
+}
+
+func (tr *TransactionRequest) Validate() bool {
+	if tr.SenderBlockchainAddress == nil ||
+		tr.RecipientBlockchainAddress == nil ||
+		tr.SenderPublicKey == nil ||
+		tr.Value == nil ||
+		tr.Signature == nil{
+		return false
+	}
+	return true
+}
+func (t *Transaction) CalculateTxHash() {
+	t.TxHash = [32]byte{} // 将 TxHash 字段设置为零值
+	txBytes, _ := json.Marshal(t)
+	t.TxHash = sha256.Sum256(txBytes)
+}
